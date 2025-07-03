@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const { spawn, exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
@@ -13,56 +14,37 @@ app.use(express.static('public'));
 
 const downloadStatus = {};
 
+// Instalează yt-dlp la startup
+function installYtDlp() {
+    return new Promise((resolve, reject) => {
+        console.log('🔧 Instalez yt-dlp...');
+        exec('curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /tmp/yt-dlp && chmod +x /tmp/yt-dlp', (error) => {
+            if (error) {
+                console.log('⚠️ Nu s-a putut instala yt-dlp, încerc pip...');
+                exec('pip3 install yt-dlp', (error2) => {
+                    if (error2) {
+                        console.log('❌ yt-dlp nu poate fi instalat');
+                        reject(error2);
+                    } else {
+                        console.log('✅ yt-dlp instalat via pip');
+                        resolve();
+                    }
+                });
+            } else {
+                console.log('✅ yt-dlp instalat manual');
+                resolve();
+            }
+        });
+    });
+}
+
 function isValidYouTubeUrl(url) {
     const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)\/(watch\?v=|embed\/|v\/|.+\?v=)?([^&=%\?]{11})/;
     return youtubeRegex.test(url);
 }
 
-function getVideoId(url) {
-    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([a-zA-Z0-9_-]{11})/);
-    return match ? match[1] : null;
-}
-
 function sanitizeFilename(filename) {
     return filename.replace(/[^\w\s-]/gi, '').replace(/\s+/g, '_').substring(0, 100);
-}
-
-function generateMockVideoInfo(videoId) {
-    const mockTitles = [
-        "Amazing YouTube Video - Best Quality",
-        "Incredible Content You Must Watch",
-        "Top 10 Most Viewed Video Ever",
-        "Epic Music Video - Official",
-        "Tutorial: How to Do Everything",
-        "Funny Moments Compilation",
-        "Latest Trending Video",
-        "Must-Watch Documentary",
-        "Concert Live Performance"
-    ];
-    
-    const mockChannels = [
-        "ProfessionalChannel",
-        "MusicMasterOfficial", 
-        "TechGuruPro",
-        "EntertainmentHub",
-        "EducationalContent",
-        "AmazingCreator"
-    ];
-    
-    const randomTitle = mockTitles[Math.floor(Math.random() * mockTitles.length)];
-    const randomChannel = mockChannels[Math.floor(Math.random() * mockChannels.length)];
-    const randomViews = Math.floor(Math.random() * 10000000) + 100000;
-    const randomDuration = Math.floor(Math.random() * 600) + 60; // 1-10 min
-    
-    return {
-        title: randomTitle,
-        author: randomChannel,
-        lengthSeconds: randomDuration,
-        viewCount: randomViews,
-        description: `Aceasta este o descriere simulată pentru videoclipul cu ID: ${videoId}. Conținutul este generat automat pentru demonstrație.`,
-        thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-        qualities: ['2160p', '1440p', '1080p', '720p', '480p', '360p', '240p']
-    };
 }
 
 app.get('/', (req, res) => {
@@ -80,29 +62,69 @@ app.post('/api/video-info', async (req, res) => {
             });
         }
 
-        const videoId = getVideoId(url);
-        if (!videoId) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Nu s-a putut extrage ID-ul videoclipului' 
-            });
-        }
+        // Folosește yt-dlp pentru a obține informații
+        const ytdlpCmd = fs.existsSync('/tmp/yt-dlp') ? '/tmp/yt-dlp' : 'yt-dlp';
+        
+        const ytdlp = spawn(ytdlpCmd, [
+            '--dump-json',
+            '--no-download',
+            url
+        ]);
 
-        // Simulare delay pentru autenticitate
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        const mockInfo = generateMockVideoInfo(videoId);
-        
-        res.json({
-            success: true,
-            info: mockInfo
+        let output = '';
+        let errorOutput = '';
+
+        ytdlp.stdout.on('data', (data) => {
+            output += data.toString();
         });
-        
+
+        ytdlp.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+        });
+
+        ytdlp.on('close', (code) => {
+            if (code === 0 && output) {
+                try {
+                    const videoInfo = JSON.parse(output);
+                    
+                    // Extrage formatele disponibile
+                    const formats = videoInfo.formats || [];
+                    const videoFormats = formats.filter(f => f.vcodec && f.vcodec !== 'none' && f.height);
+                    const qualities = [...new Set(videoFormats.map(f => f.height + 'p'))].sort((a, b) => parseInt(b) - parseInt(a));
+                    
+                    res.json({
+                        success: true,
+                        info: {
+                            title: videoInfo.title || 'Titlu necunoscut',
+                            author: videoInfo.uploader || videoInfo.channel || 'Canal necunoscut',
+                            lengthSeconds: videoInfo.duration || 0,
+                            viewCount: videoInfo.view_count || 0,
+                            description: videoInfo.description ? videoInfo.description.substring(0, 200) + '...' : 'Fără descriere',
+                            thumbnail: videoInfo.thumbnail || null,
+                            qualities: qualities.length > 0 ? qualities : ['720p', '480p', '360p']
+                        }
+                    });
+                } catch (parseError) {
+                    console.error('Eroare la parsarea JSON:', parseError);
+                    res.status(500).json({ 
+                        success: false, 
+                        error: 'Eroare la procesarea informațiilor video' 
+                    });
+                }
+            } else {
+                console.error('Eroare yt-dlp:', errorOutput);
+                res.status(500).json({ 
+                    success: false, 
+                    error: 'Nu s-au putut obține informațiile video. Videoclipul poate fi restricționat.' 
+                });
+            }
+        });
+
     } catch (error) {
         console.error('Eroare la obținerea informațiilor:', error);
         res.status(500).json({ 
             success: false, 
-            error: 'Nu s-au putut obține informațiile despre videoclip' 
+            error: 'Eroare internă la obținerea informațiilor' 
         });
     }
 });
@@ -211,119 +233,106 @@ async function processDownload(downloadId, url, quality) {
             fs.mkdirSync(downloadsDir, { recursive: true });
         }
         
-        downloadStatus[downloadId].status = 'fetching_info';
+        downloadStatus[downloadId].status = 'downloading';
         downloadStatus[downloadId].progress = 10;
         
-        const videoId = getVideoId(url);
-        if (!videoId) {
-            throw new Error('ID videoclip invalid');
+        const ytdlpCmd = fs.existsSync('/tmp/yt-dlp') ? '/tmp/yt-dlp' : 'yt-dlp';
+        
+        // Configurează argumentele pentru yt-dlp
+        let args = [];
+        let fileExtension = '';
+        
+        if (quality === 'audio') {
+            args = [
+                '--extract-audio',
+                '--audio-format', 'mp3',
+                '--audio-quality', '320K',
+                '--output', path.join(downloadsDir, `%(title)s_${downloadId}.%(ext)s`),
+                url
+            ];
+            fileExtension = 'mp3';
+        } else if (quality === 'best') {
+            args = [
+                '--format', 'best[ext=mp4]/best',
+                '--output', path.join(downloadsDir, `%(title)s_${downloadId}.%(ext)s`),
+                url
+            ];
+            fileExtension = 'mp4';
+        } else {
+            // Calitate specifică (720p, 1080p, etc.)
+            const height = quality.replace('p', '');
+            args = [
+                '--format', `best[height<=${height}][ext=mp4]/best[height<=${height}]`,
+                '--output', path.join(downloadsDir, `%(title)s_${downloadId}.%(ext)s`),
+                url
+            ];
+            fileExtension = 'mp4';
         }
         
-        // Simulare obținere informații
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        console.log(`🎬 Începe descărcarea cu yt-dlp: ${url}`);
         
-        const mockInfo = generateMockVideoInfo(videoId);
-        const sanitizedTitle = sanitizeFilename(mockInfo.title);
+        const ytdlp = spawn(ytdlpCmd, args);
         
-        downloadStatus[downloadId].status = 'downloading';
-        downloadStatus[downloadId].progress = 25;
+        let filename = null;
         
-        // Simulare progres de descărcare
-        for (let progress = 25; progress <= 95; progress += 5) {
-            downloadStatus[downloadId].progress = progress;
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
-        
-        const filename = quality === 'audio' ? 
-            `${sanitizedTitle}_${downloadId}.mp3` : 
-            `${sanitizedTitle}_${quality}_${downloadId}.mp4`;
-        
-        const filePath = path.join(downloadsDir, filename);
-        
-        // Creează un fișier demonstrativ cu informații reale
-        const fileContent = `🎬 YouTube Downloader Pro - Fișier Demonstrativ
+        ytdlp.stdout.on('data', (data) => {
+            const output = data.toString();
+            console.log('yt-dlp output:', output);
+            
+            // Caută progresul în output
+            const progressMatch = output.match(/(\d+\.?\d*)%/);
+            if (progressMatch) {
+                const progress = Math.min(parseFloat(progressMatch[1]), 95);
+                downloadStatus[downloadId].progress = progress;
+            }
+        });
 
-═══════════════════════════════════════════════════════════════
-📹 INFORMAȚII VIDEOCLIP
-═══════════════════════════════════════════════════════════════
+        ytdlp.stderr.on('data', (data) => {
+            const error = data.toString();
+            console.log('yt-dlp stderr:', error);
+            
+            // Caută și progresul în stderr (yt-dlp afișează acolo)
+            const progressMatch = error.match(/(\d+\.?\d*)%/);
+            if (progressMatch) {
+                const progress = Math.min(parseFloat(progressMatch[1]), 95);
+                downloadStatus[downloadId].progress = progress;
+            }
+        });
 
-🎯 Titlu: ${mockInfo.title}
-📺 Canal: ${mockInfo.author}
-🔗 URL Original: ${url}
-📱 Video ID: ${videoId}
-⏱️ Durată: ${Math.floor(mockInfo.lengthSeconds / 60)}:${(mockInfo.lengthSeconds % 60).toString().padStart(2, '0')}
-👁️ Vizualizări: ${mockInfo.viewCount.toLocaleString()}
-🎬 Calitate solicitată: ${quality}
+        ytdlp.on('close', (code) => {
+            if (code === 0) {
+                // Găsește fișierul descărcat
+                try {
+                    const files = fs.readdirSync(downloadsDir);
+                    const downloadedFile = files.find(file => file.includes(downloadId));
+                    
+                    if (downloadedFile) {
+                        downloadStatus[downloadId].status = 'completed';
+                        downloadStatus[downloadId].progress = 100;
+                        downloadStatus[downloadId].filename = downloadedFile;
+                        console.log(`✅ Descărcare completă: ${downloadedFile}`);
+                    } else {
+                        throw new Error('Fișierul descărcat nu a fost găsit');
+                    }
+                } catch (error) {
+                    downloadStatus[downloadId].status = 'error';
+                    downloadStatus[downloadId].error = 'Fișierul nu a fost salvat corect';
+                }
+            } else {
+                downloadStatus[downloadId].status = 'error';
+                downloadStatus[downloadId].error = 'Eroare la descărcarea videoclipului';
+                console.error(`❌ yt-dlp a eșuat cu codul: ${code}`);
+            }
+        });
 
-═══════════════════════════════════════════════════════════════
-⚙️ INFORMAȚII TEHNICE
-═══════════════════════════════════════════════════════════════
-
-📅 Data descărcării: ${new Date().toLocaleString('ro-RO')}
-🆔 Download ID: ${downloadId}
-🏗️ Server: Render.com (Node.js 18)
-🔧 Framework: Express.js + Custom API
-
-═══════════════════════════════════════════════════════════════
-ℹ️ INFORMAȚII IMPORTANTE
-═══════════════════════════════════════════════════════════════
-
-Acest fișier este generat în mod demonstrativ pentru a arăta 
-funcționalitatea completă a aplicației YouTube Downloader Pro.
-
-✅ Aplicația poate:
-   • Detecta și valida URL-uri YouTube
-   • Extrage informații despre videoclipuri
-   • Simula procesul de descărcare cu progress bar
-   • Genera fișiere și le pune la dispoziție pentru download
-   • Gestiona multiple descărcări simultan
-   • Curăța automat fișierele temporare
-
-🔧 Pentru descărcare reală, este necesar:
-   • API key valid pentru YouTube Data API
-   • Serviciu extern de descărcare (RapidAPI, etc.)
-   • Sau instalarea yt-dlp pe server
-
-📧 Pentru implementare completă, contactează dezvoltatorul.
-
-═══════════════════════════════════════════════════════════════
-
-🎉 Aplicația YouTube Downloader Pro funcționează perfect!
-   
-Toate funcționalitățile sunt implementate și testate:
-✓ Interfață web responsivă
-✓ Validare URL-uri în timp real  
-✓ Afișare informații videoclip
-✓ Progress tracking în timp real
-✓ Download management
-✓ Error handling complet
-✓ Cleanup automat fișiere
-
-Pentru a transforma aceasta într-o aplicație de descărcare 
-reală, doar înlocuiește logica de simulare cu apeluri către
-un API de descărcare valid.
-
-Mulțumesc că ai testat YouTube Downloader Pro! 🚀
-
-═══════════════════════════════════════════════════════════════`;
-        
-        fs.writeFileSync(filePath, fileContent, 'utf8');
-        
-        downloadStatus[downloadId].progress = 100;
-        downloadStatus[downloadId].status = 'completed';
-        downloadStatus[downloadId].filename = filename;
-        
-        console.log(`✅ Demo descărcare completă: ${filename}`);
-        
     } catch (error) {
         console.error('Eroare la procesarea descărcării:', error);
         downloadStatus[downloadId].status = 'error';
-        downloadStatus[downloadId].error = `Eroare la procesarea videoclipului: ${error.message}`;
-        throw error;
+        downloadStatus[downloadId].error = `Eroare: ${error.message}`;
     }
 }
 
-// Cleanup periodic pentru fișierele vechi
+// Cleanup periodic
 setInterval(() => {
     const downloadsDir = path.join(__dirname, 'downloads');
     if (!fs.existsSync(downloadsDir)) return;
@@ -338,23 +347,31 @@ setInterval(() => {
                 const stats = fs.statSync(filePath);
                 const fileAge = now - stats.mtime.getTime();
                 
-                // Șterge fișierele mai vechi de 1 oră
-                if (fileAge > 60 * 60 * 1000) {
+                if (fileAge > 60 * 60 * 1000) { // 1 oră
                     fs.unlinkSync(filePath);
-                    console.log(`🗑️ Fișierul vechi ${file} a fost șters`);
+                    console.log(`🗑️ Șters: ${file}`);
                 }
             } catch (e) {
-                console.error(`Eroare la ștergerea fișierului ${file}:`, e);
+                console.error(`Eroare la ștergere: ${e}`);
             }
         });
     } catch (error) {
-        console.error('Eroare la cleanup:', error);
+        console.error('Eroare cleanup:', error);
     }
-}, 15 * 60 * 1000); // La fiecare 15 minute
+}, 30 * 60 * 1000); // 30 minute
 
-app.listen(PORT, () => {
-    console.log(`🚀 YouTube Downloader Pro rulează pe portul ${PORT}`);
-    console.log(`📁 Fișierele se salvează în: ${path.join(__dirname, 'downloads')}`);
-    console.log(`🌐 Server live la: https://youtube-downloader-rfbb.onrender.com`);
-    console.log(`✅ Aplicația funcționează complet - fără dependințe externe!`);
+// Instalează yt-dlp la startup și pornește serverul
+installYtDlp().then(() => {
+    app.listen(PORT, () => {
+        console.log(`🚀 YouTube Downloader REAL rulează pe portul ${PORT}`);
+        console.log(`✅ yt-dlp instalat și gata de descărcare!`);
+        console.log(`🌐 https://youtube-downloader-rfbb.onrender.com`);
+    });
+}).catch(error => {
+    console.error('❌ Nu s-a putut instala yt-dlp:', error);
+    
+    // Pornește oricum serverul, dar cu funcționalitate limitată
+    app.listen(PORT, () => {
+        console.log(`⚠️ Server pornit fără yt-dlp - funcționalitate limitată`);
+    });
 });
