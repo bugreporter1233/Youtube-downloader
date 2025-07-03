@@ -68,6 +68,8 @@ app.post('/api/video-info', async (req, res) => {
         const ytdlp = spawn(ytdlpCmd, [
             '--dump-json',
             '--no-download',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            '--referer', 'https://www.youtube.com/',
             url
         ]);
 
@@ -247,6 +249,8 @@ async function processDownload(downloadId, url, quality) {
                 '--extract-audio',
                 '--audio-format', 'mp3',
                 '--audio-quality', '320K',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                '--referer', 'https://www.youtube.com/',
                 '--output', path.join(downloadsDir, `%(title)s_${downloadId}.%(ext)s`),
                 url
             ];
@@ -254,6 +258,8 @@ async function processDownload(downloadId, url, quality) {
         } else if (quality === 'best') {
             args = [
                 '--format', 'best[ext=mp4]/best',
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                '--referer', 'https://www.youtube.com/',
                 '--output', path.join(downloadsDir, `%(title)s_${downloadId}.%(ext)s`),
                 url
             ];
@@ -263,6 +269,8 @@ async function processDownload(downloadId, url, quality) {
             const height = quality.replace('p', '');
             args = [
                 '--format', `best[height<=${height}][ext=mp4]/best[height<=${height}]`,
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                '--referer', 'https://www.youtube.com/',
                 '--output', path.join(downloadsDir, `%(title)s_${downloadId}.%(ext)s`),
                 url
             ];
