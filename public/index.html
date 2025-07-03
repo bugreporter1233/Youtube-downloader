@@ -502,4 +502,189 @@
                     displayVideoInfo(data.info);
                     updateQualityOptions(data.info.qualities);
                 } else {
-                    showStatus(`❌ ${data.error}`, '
+                    showStatus(`❌ ${data.error}`, 'error');
+                }
+            } catch (error) {
+                showStatus('❌ Eroare la obținerea informațiilor video', 'error');
+            }
+        }
+
+        function displayVideoInfo(info) {
+            const duration = info.lengthSeconds ? 
+                `${Math.floor(info.lengthSeconds / 60)}:${(info.lengthSeconds % 60).toString().padStart(2, '0')}` : 
+                'Necunoscut';
+            
+            videoInfo.innerHTML = `
+                <h3>📹 ${info.title}</h3>
+                <div class="video-info-grid">
+                    <div>
+                        <p><strong>📺 Canal:</strong> ${info.author}</p>
+                        <p><strong>⏱️ Durată:</strong> ${duration}</p>
+                        <p><strong>👁️ Vizualizări:</strong> ${parseInt(info.viewCount).toLocaleString()}</p>
+                    </div>
+                </div>
+                ${info.thumbnail ? `<img src="${info.thumbnail}" alt="Thumbnail" class="thumbnail">` : ''}
+                <p style="margin-top: 15px;"><strong>📄 Descriere:</strong> ${info.description}</p>
+            `;
+            videoInfo.style.display = 'block';
+        }
+
+        function updateQualityOptions(qualities) {
+            const bestOption = qualitySelector.querySelector('.quality-option:first-child');
+            const audioOption = qualitySelector.querySelector('.quality-option:last-child');
+            
+            if (qualities && qualities.length > 0) {
+                let newOptions = '';
+                qualities.forEach(quality => {
+                    if (quality && quality !== 'undefined') {
+                        const id = quality.replace('p', '').replace(' ', '');
+                        newOptions += `
+                            <div class="quality-option">
+                                <input type="radio" id="${id}" name="quality" value="${quality}">
+                                <label for="${id}">
+                                    <strong>${quality}</strong><br>
+                                    <small>Calitate specifică</small>
+                                </label>
+                            </div>
+                        `;
+                    }
+                });
+                
+                bestOption.insertAdjacentHTML('afterend', newOptions);
+            }
+        }
+
+        function checkDownloadStatus(downloadId) {
+            statusCheckInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/api/download-status/${downloadId}`);
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const downloadStatus = data.status;
+                        
+                        if (downloadStatus.status === 'downloading' || downloadStatus.status === 'fetching_info') {
+                            progressContainer.style.display = 'block';
+                            progressFill.style.width = `${downloadStatus.progress}%`;
+                            progressText.textContent = `${downloadStatus.progress}%`;
+                        } else if (downloadStatus.status === 'completed') {
+                            clearInterval(statusCheckInterval);
+                            progressContainer.style.display = 'none';
+                            loading.style.display = 'none';
+                            downloadBtn.disabled = false;
+                            btnText.textContent = '📥 Descarcă Videoclipul';
+                            
+                            showStatus(`✅ Descărcare completă!`, 'success');
+                            
+                            const downloadLink = document.createElement('a');
+                            downloadLink.href = `${API_BASE}/api/file/${downloadId}`;
+                            downloadLink.className = 'download-link';
+                            downloadLink.textContent = '💾 Descarcă Fișierul';
+                            downloadLink.download = '';
+                            
+                            status.appendChild(downloadLink);
+                            
+                        } else if (downloadStatus.status === 'error') {
+                            clearInterval(statusCheckInterval);
+                            progressContainer.style.display = 'none';
+                            loading.style.display = 'none';
+                            downloadBtn.disabled = false;
+                            btnText.textContent = '📥 Descarcă Videoclipul';
+                            
+                            showStatus(`❌ ${downloadStatus.error}`, 'error');
+                        }
+                    }
+                } catch (error) {
+                    console.error('Eroare la verificarea statusului:', error);
+                }
+            }, 1000);
+        }
+
+        downloadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const url = videoUrlInput.value.trim();
+            const quality = document.querySelector('input[name="quality"]:checked').value;
+            
+            if (!url) {
+                showStatus('❌ Te rog introdu un URL valid!', 'error');
+                return;
+            }
+
+            downloadBtn.disabled = true;
+            btnText.textContent = 'Se procesează...';
+            loading.style.display = 'flex';
+            progressContainer.style.display = 'none';
+            status.style.display = 'none';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/download`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ url, quality })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentDownloadId = data.downloadId;
+                    showStatus('📦 Descărcarea a început...', 'info');
+                    checkDownloadStatus(currentDownloadId);
+                } else {
+                    throw new Error(data.error);
+                }
+                
+            } catch (error) {
+                loading.style.display = 'none';
+                downloadBtn.disabled = false;
+                btnText.textContent = '📥 Descarcă Videoclipul';
+                showStatus(`❌ Eroare: ${error.message}`, 'error');
+            }
+        });
+
+        let infoTimeout;
+        videoUrlInput.addEventListener('input', (e) => {
+            const url = e.target.value.trim();
+            
+            clearTimeout(infoTimeout);
+            
+            if (url && (url.includes('youtube.com') || url.includes('youtu.be'))) {
+                e.target.style.borderColor = '#28a745';
+                
+                infoTimeout = setTimeout(() => {
+                    getVideoInfo(url);
+                }, 1000);
+            } else if (url) {
+                e.target.style.borderColor = '#dc3545';
+                videoInfo.style.display = 'none';
+            } else {
+                e.target.style.borderColor = '#e0e0e0';
+                videoInfo.style.display = 'none';
+            }
+        });
+
+        document.addEventListener('change', (e) => {
+            if (e.target.name === 'quality') {
+                const quality = e.target.value;
+                let btnText = '📥 Descarcă ';
+                
+                switch(quality) {
+                    case 'best':
+                        btnText += 'în Calitate Maximă';
+                        break;
+                    case 'audio':
+                        btnText += 'doar Audio';
+                        break;
+                    default:
+                        btnText += `în ${quality}`;
+                        break;
+                }
+                
+                document.getElementById('btnText').textContent = btnText;
+            }
+        });
+    </script>
+</body>
+</html>
