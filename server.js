@@ -38,7 +38,14 @@ app.post('/api/video-info', async (req, res) => {
         }
 
         const options = {
-            playerClients: ['WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV']
+            playerClients: ['WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV'],
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+                }
+            }
         };
         
         const info = await ytdl.getInfo(url, options);
@@ -86,10 +93,66 @@ app.post('/api/video-info', async (req, res) => {
         });
     } catch (error) {
         console.error('Eroare la obținerea informațiilor:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Nu s-au putut obține informațiile despre videoclip. Videoclipul poate fi restricționat.' 
-        });
+        
+        // Încearcă cu client diferit dacă primul eșuează
+        try {
+            console.log('Încerc cu client backup...');
+            const backupOptions = {
+                playerClients: ['IOS'],
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)',
+                        'Accept-Language': 'en-US,en;q=0.9'
+                    }
+                }
+            };
+            
+            const info = await ytdl.getInfo(url, backupOptions);
+            const videoDetails = info.videoDetails;
+            
+            const formats = ytdl.filterFormats(info.formats, 'videoandaudio');
+            const videoOnlyFormats = ytdl.filterFormats(info.formats, 'videoonly');
+            
+            const qualities = [];
+            
+            formats.forEach(format => {
+                if (format.qualityLabel && !qualities.includes(format.qualityLabel)) {
+                    qualities.push(format.qualityLabel);
+                }
+            });
+            
+            videoOnlyFormats.forEach(format => {
+                if (format.qualityLabel && !qualities.includes(format.qualityLabel)) {
+                    qualities.push(format.qualityLabel);
+                }
+            });
+            
+            qualities.sort((a, b) => {
+                const aNum = parseInt(a);
+                const bNum = parseInt(b);
+                return bNum - aNum;
+            });
+            
+            res.json({
+                success: true,
+                info: {
+                    title: videoDetails.title,
+                    author: videoDetails.author.name,
+                    lengthSeconds: parseInt(videoDetails.lengthSeconds),
+                    viewCount: parseInt(videoDetails.viewCount),
+                    description: videoDetails.description ? videoDetails.description.substring(0, 200) + '...' : 'Fără descriere',
+                    thumbnail: videoDetails.thumbnails[videoDetails.thumbnails.length - 1].url,
+                    qualities: qualities.length > 0 ? qualities : ['720p', '480p', '360p']
+                }
+            });
+            
+        } catch (backupError) {
+            console.error('Eroare și la backup:', backupError);
+            res.status(500).json({ 
+                success: false, 
+                error: 'Videoclipul nu poate fi accesat. Poate fi restricționat geografic, privat, sau YouTube blochează cererea.' 
+            });
+        }
     }
 });
 
@@ -201,7 +264,14 @@ async function processDownload(downloadId, url, quality) {
         downloadStatus[downloadId].progress = 10;
         
         const options = {
-            playerClients: ['WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV']
+            playerClients: ['WEB_EMBEDDED', 'IOS', 'ANDROID', 'TV'],
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+                }
+            }
         };
         
         // Obține informațiile despre video
